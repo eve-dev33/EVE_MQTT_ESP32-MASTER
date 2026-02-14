@@ -34,6 +34,7 @@ static const char* TZ_INFO = "CET-1CEST,M3.5.0/2,M10.5.0/3";
 static const char* MQTT_HOST = "192.168.1.10";
 static const uint16_t MQTT_PORT = 1883;
 static const char* MQTT_CLIENT_ID = "eve-power-master";
+static const uint32_t WIFI_RETRY_MS = 5000;
 
 static const uint32_t SCHEDULE_ACK_TIMEOUT_MS = 3000;
 static const uint8_t SCHEDULE_RETRY_MAX = 1;
@@ -189,6 +190,8 @@ void handleScheduleSet(uint8_t relay, const String &payload) {
     return;
   }
 
+  mqttPublish(relay, "schedule/slave/ack", "PENDING", false);
+
   if (!waitingAck[relay-1] && schedulesEqual(candidate, activeSchedules[relay-1])) {
     mqttPublish(relay, "schedule/current", scheduleToJson(activeSchedules[relay-1]).c_str(), true);
     Serial.printf("[SCHEDULE] relay=%u idempotent no-op\n", relay);
@@ -202,6 +205,7 @@ void handleScheduleSet(uint8_t relay, const String &payload) {
 
   if (!sendRulesPacket(relay, candidate)) {
     Serial.printf("[SCHEDULE] relay=%u send failed\n", relay);
+    mqttPublish(relay, "schedule/slave/ack", "ERROR", false);
   }
 }
 
@@ -254,12 +258,16 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
 
 void ensureMqttConnected() {
   if (!mqtt.connected()) {
+    Serial.printf("[MQTT] connecting %s:%u\n", MQTT_HOST, MQTT_PORT);
     if (mqtt.connect(MQTT_CLIENT_ID)) {
+      Serial.println("[MQTT] connected");
       for (uint8_t relay = 1; relay <= 3; relay++) {
         mqtt.subscribe(topicForRelay(relay, "set").c_str());
         mqtt.subscribe(topicForRelay(relay, "schedule/set").c_str());
       }
       publishRetainedSchedules();
+    } else {
+      Serial.printf("[MQTT] connect failed state=%d\n", mqtt.state());
     }
   }
 }
@@ -309,6 +317,21 @@ bool initEspNow() {
 }
 
 bool timeSynced = false;
+uint32_t lastWifiRetryAt = 0;
+
+void ensureWifiConnected() {
+  if (strlen(WIFI_SSID) == 0) return;
+  if (WiFi.status() == WL_CONNECTED) return;
+
+  uint32_t now = millis();
+  if ((int32_t)(now - lastWifiRetryAt) < (int32_t)WIFI_RETRY_MS) return;
+  lastWifiRetryAt = now;
+
+  Serial.printf("[WIFI] reconnecting ssid=%s\n", WIFI_SSID);
+  WiFi.disconnect(false, false);
+  WiFi.begin(WIFI_SSID, WIFI_PASS);
+}
+
 void maybeInitWifiAndNtp() {
   if (strlen(WIFI_SSID) == 0) return;
   WiFi.mode(WIFI_STA);
@@ -390,6 +413,8 @@ void loop() {
   if (WiFi.status() == WL_CONNECTED) {
     ensureMqttConnected();
     mqtt.loop();
+  } else {
+    ensureWifiConnected();
   }
   checkScheduleTimeouts();
 
