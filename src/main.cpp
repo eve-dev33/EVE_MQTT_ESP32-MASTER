@@ -272,9 +272,10 @@ void ensureMqttConnected() {
   }
 }
 
-void onEspNowRecv(const uint8_t* mac, const uint8_t* data, int len) {
-  rxCount++;
-  addPeerIfNeeded(mac);
+void onEspNowRecv(const esp_now_recv_info_t* info, const uint8_t* data, int len) {
+  rxCount = rxCount + 1;
+  const uint8_t* mac = (info != nullptr) ? info->src_addr : nullptr;
+  if (mac != nullptr) addPeerIfNeeded(mac);
 
   if (len == (int)sizeof(TelemetryPacket)) {
     memcpy((void*)&rx, data, sizeof(TelemetryPacket));
